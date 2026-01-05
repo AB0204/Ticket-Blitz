@@ -4,8 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start:api": "ts-node src/index.ts",
-    "start:worker": "ts-node src/worker.ts",
+    "build": "tsc",
+    "postinstall": "prisma generate",
+    "start:api": "node dist/index.js",
+    "start:worker": "node dist/worker.js",
+    "dev:api": "ts-node src/index.ts",
+    "dev:worker": "ts-node src/worker.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

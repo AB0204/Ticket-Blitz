@@ -202,9 +202,16 @@ app.post<{ Body: BookingBody }>('/api/book-secure', async (request, reply) => {
     }
 });
 
+// -- SINGLE PROCESS WORKER (Optional for Render Free) --
+import { runWorker } from './worker';
+
 // Connect Kafka on startup
 const start = async () => {
     try {
+        if (process.env.SINGLE_PROCESS === 'true') {
+            console.log("Starting Worker in Single Process Mode...");
+            runWorker().catch(console.error);
+        }
         await producer.connect();
         console.log("Kafka Producer Connected");
 

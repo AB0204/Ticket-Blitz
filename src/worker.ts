@@ -70,7 +70,7 @@ async function processBooking(userId: string, seatNumber: number) {
     }
 }
 
-const run = async () => {
+export const runWorker = async () => {
     await consumer.connect();
     await consumer.subscribe({ topic: 'booking-requests', fromBeginning: true });
 
@@ -85,4 +85,6 @@ const run = async () => {
     });
 };
 
-run().catch(console.error);
+if (process.env.SINGLE_PROCESS !== 'true' && require.main === module) {
+    runWorker().catch(console.error);
+}
