@@ -7,8 +7,9 @@ It demonstrates advanced Node.js patterns, Distributed Locking (Redis), and Even
 
 ## 🚀 Key Features
 
-- **🛡️ Race Condition Protection:** Implements **Redis Distributed Locks (Redlock)** to prevent double-booking seats.
+- **🛡️ Race Condition Protection:** Implements **Redis Distributed Locks (Redlock)** via an atomic **Lua Script** unlock.
 - **⚡ Event-Driven Architecture:** Uses **Apache Kafka (Redpanda)** to buffer traffic spikes, decoupling the API from the Database.
+- **👁️ Engineering Visualizer:** Built-in React dashboard for real-time telemetry (Lock attempts, Kafka events).
 - **🏎️ High Performance:** Built with **Fastify** (2x faster than Express) and **Prisma ORM**.
 - **🧪 Load Tested:** Verified with **k6** scenarios simulating aggressive traffic (5,000 req/sec).
 
@@ -23,22 +24,25 @@ graph TD
     Kafka -->|Consume| Worker[Worker Service]
     Worker -->|Acquire Lock| Redis
     Worker -->|Write Loop| DB[(PostgreSQL)]
+    
+    API -->|Real-time| Socket[Socket.io]
+    Socket -->|Telemetry| UI[React Visualizer]
 ```
 
-## 📊  Performance Benchmarks
+## 🌐 Production Architecture (Live-Ready)
 
-| Scenario | Strategy | Result |
-|----------|----------|--------|
-| **Naive Approach** | Direct DB Write | 💥 **CRASH** (Double Bookings & DB Deadlocks) |
-| **Secure Approach** | Redis Mutex Lock | ✅ **STABLE** (1 Success, 49 Rejections) |
-| **Async Approach** | Kafka Queue | 🚀 **SCALABLE** (100% Accepted, Processed in BG) |
+TicketBlitz is designed for multi-cloud deployment:
+- **Frontend:** Vercel (Edge Config Ready)
+- **Backend:** Railway (Distributed Service Lifecycle)
+- **Database:** Neon (Serverless Postgres)
+- **Locks & Events:** Upstash (Serverless Redis & Kafka)
 
 ## 🛠️ Tech Stack
 
-- **Backend:** Node.js, TypeScript, Fastify
+- **Backend:** Node.js, TypeScript, Fastify, Socket.io
 - **Database:** PostgreSQL, Prisma
-- **Infrastructure:** Docker, Docker Compose
-- **Message Broker:** Redpanda (Kafka compatible)
+- **Infrastructure:** Redis (Locks), Kafka (Queues)
+- **Frontend:** React, Vite
 - **Testing:** k6 (Load Testing)
 
 ## 🏃‍♂️ How to Run
@@ -48,24 +52,23 @@ graph TD
    docker compose up -d
    ```
 
-2. **Seed Database:**
+2. **Setup Env:** 
+   Copy `.env.example` to `.env` and fill in cloud credentials.
+
+3. **Database Setup:**
    ```bash
    npx prisma db push
    npx ts-node prisma/seed.ts
    ```
 
-3. **Start Components:**
+4. **Start Components:**
    ```bash
-   # Terminal 1: API
-   PORT=3000 npx ts-node src/index.ts
+   # Root
+   npm run start:api
+   npm run start:worker
    
-   # Terminal 2: Worker
-   npx ts-node src/worker.ts
-   ```
-
-4. **Run Load Test:**
-   ```bash
-   k6 run load-test.js
+   # Frontend
+   cd client && npm run dev
    ```
 
 ## 📝 License

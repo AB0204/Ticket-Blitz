@@ -1,17 +1,23 @@
 import Fastify, { FastifyInstance, RouteShorthandOptions } from 'fastify';
 import { PrismaClient } from '@prisma/client';
-import { z } from 'zod'; // We'll install zod for validation
+import { z } from 'zod';
+import cors from '@fastify/cors';
 
 const app = Fastify({ logger: true });
 const prisma = new PrismaClient();
 
-// Connect DB
+// Enable CORS
+app.register(cors, {
+    origin: ["http://localhost:5173", "https://ticket-blitz-v2.vercel.app"], // Add your production domain
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+});
+
 // -- KAFKA CONFIG --
 import { Kafka } from 'kafkajs';
 
 const kafka = new Kafka({
     clientId: 'ticket-blitz-api',
-    brokers: ['localhost:9092']
+    brokers: process.env.KAFKA_BROKERS ? process.env.KAFKA_BROKERS.split(',') : ['localhost:9092']
 });
 
 const producer = kafka.producer();
@@ -182,13 +188,17 @@ app.post<{ Body: BookingBody }>('/api/book-secure', async (request, reply) => {
         app.log.error(error);
         return reply.status(500).send({ error: "Booking Failed" });
     } finally {
-        // 3. RELEASE LOCK
-        // Only delete if WE are the owner (Strictly speaking, we should check value, but for demo 'del' is okay)
-        // Lua script is safer for production, but this is sufficient for 'Junior/Mid' demo.
-        const currentLockValue = await redis.get(lockKey);
-        if (currentLockValue === lockValue) {
-            await redis.del(lockKey);
-        }
+        // 3. RELEASE LOCK (Production-safe Atomic Lua Script)
+        // script verifies the lock value matches before deleting.
+        const unlockScript = `
+            if redis.call("get", KEYS[1]) == ARGV[1] then
+                return redis.call("del", KEYS[1])
+            else
+                return 0
+            end
+        `;
+        // @ts-ignore
+        await redis.eval(unlockScript, 1, lockKey, lockValue);
     }
 });
 

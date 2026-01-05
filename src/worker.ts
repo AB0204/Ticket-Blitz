@@ -10,7 +10,7 @@ const redis = new Redis({
 
 const kafka = new Kafka({
     clientId: 'ticket-blitz-worker',
-    brokers: ['localhost:9092']
+    brokers: process.env.KAFKA_BROKERS ? process.env.KAFKA_BROKERS.split(',') : ['localhost:9092']
 });
 
 const consumer = kafka.consumer({ groupId: 'booking-group' });
@@ -58,10 +58,15 @@ async function processBooking(userId: string, seatNumber: number) {
     } catch (e) {
         console.error("[Worker] Error:", e);
     } finally {
-        const currentLock = await redis.get(lockKey);
-        if (currentLock === userId) {
-            await redis.del(lockKey);
-        }
+        const unlockScript = `
+            if redis.call("get", KEYS[1]) == ARGV[1] then
+                return redis.call("del", KEYS[1])
+            else
+                return 0
+            end
+        `;
+        // @ts-ignore
+        await redis.eval(unlockScript, 1, lockKey, userId);
     }
 }
 

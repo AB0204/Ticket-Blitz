@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import io from 'socket.io-client';
+import Visualizer from './components/Visualizer';
 import './App.css';
 
-// Connect to API Server (localhost for development)
-const socket = io('http://localhost:3000');
+// Connect to API Server
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const socket = io(API_URL);
 
 type SeatStatus = 'AVAILABLE' | 'BOOKED' | 'LOCKED' | 'PENDING';
 
@@ -21,6 +23,13 @@ function App() {
   const [pendingSeats, setPendingSeats] = useState<Set<number>>(new Set());
 
   const [metrics, setMetrics] = useState({ booked: 0, available: 100 });
+  const [telemetry, setTelemetry] = useState({
+    locksAcquired: 0,
+    kafkaEvents: 0,
+    dbWrites: 0,
+    lastActionType: 'DB' as 'LOCK' | 'KAFKA' | 'DB',
+    lastActionMessage: 'System Ready'
+  });
 
   useEffect(() => {
     // Listen for updates
@@ -34,6 +43,13 @@ function App() {
             newPending.delete(seat.id);
             setPendingSeats(newPending);
           }
+          setTelemetry(prev => ({
+            ...prev,
+            kafkaEvents: prev.kafkaEvents + 1,
+            dbWrites: prev.dbWrites + 1,
+            lastActionType: 'KAFKA',
+            lastActionMessage: `Confirmed: Seat ${data.seatNumber}`
+          }));
           return { ...seat, status: data.status };
         }
         return seat;
@@ -66,7 +82,14 @@ function App() {
       // 2. Fire and Forget (Async Architecture)
       // We don't wait for the booking confirmation here. 
       // We wait for the Websocket event to turn it Red.
-      await fetch('http://localhost:3000/api/book-async', {
+      setTelemetry(prev => ({
+        ...prev,
+        locksAcquired: prev.locksAcquired + 1,
+        lastActionType: 'LOCK',
+        lastActionMessage: `Checking Lock: Seat ${seat.id}`
+      }));
+
+      await fetch(`${API_URL}/api/book-async`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -111,6 +134,8 @@ function App() {
           </div>
         ))}
       </div>
+
+      <Visualizer metrics={telemetry} />
 
       <p style={{ marginTop: '2rem', color: '#666', fontSize: '0.8rem' }}>
         Backend: Node.js + Fastify + Redis + Kafka | Frontend: React + Socket.io
