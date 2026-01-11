@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "postinstall": "prisma generate",
-    "start:api": "node dist/index.js",
+    "start:api": "npx prisma migrate deploy && node dist/index.js",
     "start:worker": "node dist/worker.js",
     "dev:api": "ts-node src/index.ts",
     "dev:worker": "ts-node src/worker.ts",
