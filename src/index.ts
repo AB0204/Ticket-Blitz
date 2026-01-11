@@ -17,39 +17,70 @@ app.get('/health', async (request, reply) => {
     return { status: 'ok', timestamp: new Date().toISOString() };
 });
 
-// -- KAFKA CONFIG --
-import { Kafka } from 'kafkajs';
-
-const kafka = new Kafka({
-    clientId: 'ticket-blitz-api',
-    brokers: process.env.KAFKA_BROKERS ? process.env.KAFKA_BROKERS.split(',') : ['localhost:9092']
-});
-
-const producer = kafka.producer();
+// -- KAFKA CONFIG (Disabled for Quick Demo Mode) --
+// import { Kafka } from 'kafkajs';
+// const kafka = new Kafka({
+//     clientId: 'ticket-blitz-api',
+//     brokers: process.env.KAFKA_BROKERS ? process.env.KAFKA_BROKERS.split(',') : ['localhost:9092']
+// });
+// const producer = kafka.producer();
 
 
-// -- ASYNC IMPLEMENTATION (Event Driven) --
-// High Performance: We don't write to DB. We just say "Received".
+// -- SIMPLIFIED ASYNC IMPLEMENTATION (Direct DB Write) --
+// Quick Demo Mode: Direct database write without Kafka queue
 app.post<{ Body: BookingBody }>('/api/book-async', async (request, reply) => {
     const { userId, seatNumber } = request.body;
 
-    // We can still check Redis Cache here for instant feedback (Hybrid approach)
-    // But for pure "Event Driven" demo, we just push to queue.
-
     try {
-        await producer.send({
-            topic: 'booking-requests',
-            messages: [
-                { value: JSON.stringify({ userId, seatNumber }) }
-            ]
+        // Find the seat
+        const seat = await prisma.seat.findFirst({
+            where: { number: seatNumber }
         });
 
-        // 202 Accepted: "We got your request, we'll process it soon."
-        return reply.status(202).send({ status: "Pending", message: "Request queued" });
+        if (!seat) {
+            return reply.status(404).send({ error: "Seat not found" });
+        }
+
+        if (seat.status !== "AVAILABLE") {
+            return reply.status(409).send({ error: "Seat already taken" });
+        }
+
+        const seatId = seat.id;
+
+        // Ensure user exists
+        await prisma.user.upsert({
+            where: { email: userId },
+            update: {},
+            create: {
+                id: userId,
+                email: userId,
+                name: "Test User"
+            }
+        });
+
+        // Book the seat (atomic update)
+        await prisma.seat.update({
+            where: { id: seatId },
+            data: { status: "BOOKED" }
+        });
+
+        const booking = await prisma.booking.create({
+            data: {
+                userId: userId,
+                seatId: seatId
+            }
+        });
+
+        // Return success immediately
+        return reply.status(200).send({
+            success: true,
+            bookingId: booking.id,
+            status: "Booked"
+        });
 
     } catch (error) {
         app.log.error(error);
-        return reply.status(500).send({ error: "Failed to queue request" });
+        return reply.status(500).send({ error: "Failed to process booking" });
     }
 });
 
@@ -125,92 +156,64 @@ app.get('/api/random-seat', async (req, reply) => {
     return seat;
 });
 
-// -- REDIS CONFIG --
-import Redis from 'ioredis';
-const redis = new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: Number(process.env.REDIS_PORT) || 6379
-});
-
-// Redis Subscriber for Real-time Updates
-const subscriber = new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: Number(process.env.REDIS_PORT) || 6379
-});
+// -- REDIS CONFIG (Disabled for Quick Demo Mode) --
+// import Redis from 'ioredis';
+// const redis = new Redis({
+//     host: process.env.REDIS_HOST || 'localhost',
+//     port: Number(process.env.REDIS_PORT) || 6379
+// });
+// const subscriber = new Redis({
+//     host: process.env.REDIS_HOST || 'localhost',
+//     port: Number(process.env.REDIS_PORT) || 6379
+// });
 
 // -- SOCKET.IO CONFIG --
 import { Server } from 'socket.io';
 
-// -- SECURE IMPLEMENTATION (Distributed Lock) --
-app.post<{ Body: BookingBody }>('/api/book-secure', async (request, reply) => {
-    const { userId, seatNumber } = request.body;
-    const lockKey = `lock:seat:${seatNumber}`;
-    const lockValue = userId;
-    const lockTTL = 5; // 5 seconds hold time
+// -- SECURE IMPLEMENTATION (Distributed Lock) - Disabled for Quick Demo Mode --
+// app.post<{ Body: BookingBody }>('/api/book-secure', async (request, reply) => {
+//     const { userId, seatNumber } = request.body;
+//     const lockKey = `lock:seat:${seatNumber}`;
+//     const lockValue = userId;
+//     const lockTTL = 5;
+//     const acquired = await redis.set(lockKey, lockValue, 'NX', 'EX', lockTTL);
+//     if (!acquired) {
+//         return reply.status(429).send({ error: "Seat is currently being booked by someone else. Please try again." });
+//     }
+//     try {
+//         const seat = await prisma.seat.findFirst({ where: { number: seatNumber } });
+//         if (!seat) return reply.status(404).send({ error: "Seat not found" });
+//         if (seat.status !== "AVAILABLE") return reply.status(409).send({ error: "Seat already taken" });
+//         const seatId = seat.id;
+//         await new Promise(r => setTimeout(r, 50));
+//         await prisma.user.upsert({
+//             where: { email: userId },
+//             update: {},
+//             create: { id: userId, email: userId, name: "Test User" }
+//         });
+//         await prisma.seat.update({ where: { id: seatId }, data: { status: "BOOKED" } });
+//         const booking = await prisma.booking.create({
+//             data: { userId, seatId }
+//         });
+//         return { success: true, bookingId: booking.id };
+//     } catch (error) {
+//         app.log.error(error);
+//         return reply.status(500).send({ error: "Booking Failed" });
+//     } finally {
+//         const unlockScript = `
+//             if redis.call("get", KEYS[1]) == ARGV[1] then
+//                 return redis.call("del", KEYS[1])
+//             else
+//                 return 0
+//             end
+//         `;
+//         await redis.eval(unlockScript, 1, lockKey, lockValue);
+//     }
+// });
 
-    // 1. ACQUIRE LOCK (The Traffic Cop)
-    // SET NX: Set if Not Exists. EX: Expire in seconds.
-    // Returns "OK" if set, null if already exists.
-    // @ts-ignore - ioredis types can be finicky with overloads
-    const acquired = await redis.set(lockKey, lockValue, 'NX', 'EX', lockTTL);
+// -- QUICK DEMO MODE STARTUP (No External Dependencies) --
+// import { runWorker } from './worker'; // Disabled for quick demo mode
 
-    if (!acquired) {
-        // If we can't get the lock, it means someone else is processing this seat RIGHT NOW.
-        // We fail fast to protect the DB.
-        return reply.status(429).send({ error: "Seat is currently being booked by someone else. Please try again." });
-    }
-
-    try {
-        // 2. CRITICAL SECTION (Protected by Lock)
-
-        // Check Status
-        const seat = await prisma.seat.findFirst({ where: { number: seatNumber } });
-        if (!seat) return reply.status(404).send({ error: "Seat not found" });
-        if (seat.status !== "AVAILABLE") return reply.status(409).send({ error: "Seat already taken" });
-
-        const seatId = seat.id;
-
-        // Simulate "Thinking Time" (Auth, Payment Gateway, etc)
-        // Even with this delay, no one else can enter because we hold the Redis Lock!
-        await new Promise(r => setTimeout(r, 50));
-
-        // Ensure user
-        await prisma.user.upsert({
-            where: { email: userId },
-            update: {},
-            create: { id: userId, email: userId, name: "Test User" }
-        });
-
-        // Write to DB
-        await prisma.seat.update({ where: { id: seatId }, data: { status: "BOOKED" } });
-        const booking = await prisma.booking.create({
-            data: { userId, seatId }
-        });
-
-        return { success: true, bookingId: booking.id };
-
-    } catch (error) {
-        app.log.error(error);
-        return reply.status(500).send({ error: "Booking Failed" });
-    } finally {
-        // 3. RELEASE LOCK (Production-safe Atomic Lua Script)
-        // script verifies the lock value matches before deleting.
-        const unlockScript = `
-            if redis.call("get", KEYS[1]) == ARGV[1] then
-                return redis.call("del", KEYS[1])
-            else
-                return 0
-            end
-        `;
-        // @ts-ignore
-        await redis.eval(unlockScript, 1, lockKey, lockValue);
-    }
-});
-
-// -- SINGLE PROCESS WORKER (Optional for Render Free) --
-import { runWorker } from './worker';
-
-// Connect Kafka on startup (with graceful degradation)
 const start = async () => {
     try {
         const port = Number(process.env.PORT) || 3000;
@@ -218,8 +221,9 @@ const start = async () => {
         // Start the HTTP server FIRST (critical for health checks)
         const serverAddress = await app.listen({ port, host: '0.0.0.0' });
         console.log(`✅ Server running on ${serverAddress}`);
+        console.log(`🎯 Quick Demo Mode: Kafka and Redis disabled`);
 
-        // Initialize Socket.io
+        // Initialize Socket.io for real-time updates
         const io = new Server(app.server, {
             cors: { origin: "*" } // Allow all for demo
         });
@@ -228,36 +232,7 @@ const start = async () => {
             console.log('Client connected', socket.id);
         });
 
-        // Optional: Connect to Kafka (graceful failure)
-        try {
-            await producer.connect();
-            console.log("✅ Kafka Producer Connected");
-        } catch (kafkaErr) {
-            console.warn("⚠️ Kafka connection failed. Running in degraded mode (async bookings disabled).");
-            console.warn(kafkaErr);
-        }
-
-        // Optional: Subscribe to Redis events (graceful failure)
-        try {
-            await subscriber.subscribe('seat-updates');
-            subscriber.on('message', (channel, message) => {
-                if (channel === 'seat-updates') {
-                    io.emit('seat-update', JSON.parse(message));
-                }
-            });
-            console.log("✅ Redis Subscriber Connected");
-        } catch (redisErr) {
-            console.warn("⚠️ Redis subscriber failed. Real-time updates disabled.");
-            console.warn(redisErr);
-        }
-
-        // Optional: Start worker in single process mode
-        if (process.env.SINGLE_PROCESS === 'true') {
-            console.log("Starting Worker in Single Process Mode...");
-            runWorker().catch(err => {
-                console.warn("⚠️ Worker failed to start:", err);
-            });
-        }
+        // No Kafka or Redis connections needed in quick demo mode
 
     } catch (err) {
         app.log.error(err);
