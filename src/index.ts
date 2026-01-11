@@ -12,6 +12,11 @@ app.register(cors, {
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 });
 
+// Health Check Endpoint (for Render/Railway)
+app.get('/health', async (request, reply) => {
+    return { status: 'ok', timestamp: new Date().toISOString() };
+});
+
 // -- KAFKA CONFIG --
 import { Kafka } from 'kafkajs';
 
@@ -205,21 +210,14 @@ app.post<{ Body: BookingBody }>('/api/book-secure', async (request, reply) => {
 // -- SINGLE PROCESS WORKER (Optional for Render Free) --
 import { runWorker } from './worker';
 
-// Connect Kafka on startup
+// Connect Kafka on startup (with graceful degradation)
 const start = async () => {
     try {
-        if (process.env.SINGLE_PROCESS === 'true') {
-            console.log("Starting Worker in Single Process Mode...");
-            runWorker().catch(console.error);
-        }
-        await producer.connect();
-        console.log("Kafka Producer Connected");
-
         const port = Number(process.env.PORT) || 3000;
 
-        // We must pass the HTTP server to Socket.io
+        // Start the HTTP server FIRST (critical for health checks)
         const serverAddress = await app.listen({ port, host: '0.0.0.0' });
-        console.log(`Server running on ${serverAddress}`);
+        console.log(`✅ Server running on ${serverAddress}`);
 
         // Initialize Socket.io
         const io = new Server(app.server, {
@@ -230,14 +228,36 @@ const start = async () => {
             console.log('Client connected', socket.id);
         });
 
-        // Subscribe to Worker events
-        await subscriber.subscribe('seat-updates');
-        subscriber.on('message', (channel, message) => {
-            if (channel === 'seat-updates') {
-                // Broadcast to frontend
-                io.emit('seat-update', JSON.parse(message));
-            }
-        });
+        // Optional: Connect to Kafka (graceful failure)
+        try {
+            await producer.connect();
+            console.log("✅ Kafka Producer Connected");
+        } catch (kafkaErr) {
+            console.warn("⚠️ Kafka connection failed. Running in degraded mode (async bookings disabled).");
+            console.warn(kafkaErr);
+        }
+
+        // Optional: Subscribe to Redis events (graceful failure)
+        try {
+            await subscriber.subscribe('seat-updates');
+            subscriber.on('message', (channel, message) => {
+                if (channel === 'seat-updates') {
+                    io.emit('seat-update', JSON.parse(message));
+                }
+            });
+            console.log("✅ Redis Subscriber Connected");
+        } catch (redisErr) {
+            console.warn("⚠️ Redis subscriber failed. Real-time updates disabled.");
+            console.warn(redisErr);
+        }
+
+        // Optional: Start worker in single process mode
+        if (process.env.SINGLE_PROCESS === 'true') {
+            console.log("Starting Worker in Single Process Mode...");
+            runWorker().catch(err => {
+                console.warn("⚠️ Worker failed to start:", err);
+            });
+        }
 
     } catch (err) {
         app.log.error(err);
