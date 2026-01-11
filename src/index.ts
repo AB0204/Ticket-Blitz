@@ -8,7 +8,7 @@ const prisma = new PrismaClient();
 
 // Enable CORS
 app.register(cors, {
-    origin: ["http://localhost:5173", "https://ticket-blitz-v2.vercel.app"], // Add your production domain
+    origin: ["http://localhost:5173", "https://ticket-blitz.vercel.app"], // Production Vercel domain
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 });
 
