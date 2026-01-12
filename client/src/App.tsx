@@ -32,6 +32,25 @@ function App() {
   });
 
   useEffect(() => {
+    // 0. Initial Data Fetch
+    const fetchSeats = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/seats`);
+        if (!res.ok) throw new Error('Failed to fetch seats');
+        const data = await res.json();
+        // Map DB "number" to Frontend "id"
+        const mappedSeats: Seat[] = data.map((s: any) => ({
+          id: s.number,
+          status: s.status as SeatStatus
+        }));
+        setSeats(mappedSeats);
+        setTelemetry(prev => ({ ...prev, lastActionMessage: "System Synchronized" }));
+      } catch (err) {
+        console.error("Failed to sync seats:", err);
+      }
+    };
+    fetchSeats();
+
     // Listen for updates
     socket.on('seat-update', (data: { seatNumber: number; status: SeatStatus }) => {
       // console.log("Update received:", data);
@@ -89,7 +108,7 @@ function App() {
         lastActionMessage: `Checking Lock: Seat ${seat.id}`
       }));
 
-      await fetch(`${API_URL}/api/book-async`, {
+      const res = await fetch(`${API_URL}/api/book-async`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -98,12 +117,44 @@ function App() {
         })
       });
 
+      if (res.status === 409) {
+        // Seat was actually already booked (race condition or stale state)
+        // Correct the UI to show it as BOOKED
+        setSeats(prev => prev.map(s =>
+          s.id === seat.id ? { ...s, status: 'BOOKED' } : s
+        ));
+        // Remove from pending
+        setPendingSeats(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(seat.id);
+          return newSet;
+        });
+      } else if (!res.ok) {
+        // Other errors (500, etc) - Revert
+        setSeats(prev => prev.map(s =>
+          s.id === seat.id ? { ...s, status: 'AVAILABLE' } : s
+        ));
+        setPendingSeats(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(seat.id);
+          return newSet;
+        });
+      }
+
+      // If 200 OK, we do nothing and wait for Socket event
+      // to confirm the booking (and transition options).
+
     } catch (err) {
       console.error("Booking request failed", err);
       // Revert on failure (optional for this simple demo)
       setSeats(prev => prev.map(s =>
         s.id === seat.id ? { ...s, status: 'AVAILABLE' } : s
       ));
+      setPendingSeats(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(seat.id);
+        return newSet;
+      });
     }
   };
 

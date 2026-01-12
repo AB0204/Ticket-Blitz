@@ -170,69 +170,109 @@ app.get('/api/random-seat', async (req, reply) => {
 // -- SOCKET.IO CONFIG --
 import { Server } from 'socket.io';
 
-// -- SECURE IMPLEMENTATION (Distributed Lock) - Disabled for Quick Demo Mode --
-// app.post<{ Body: BookingBody }>('/api/book-secure', async (request, reply) => {
-//     const { userId, seatNumber } = request.body;
-//     const lockKey = `lock:seat:${seatNumber}`;
-//     const lockValue = userId;
-//     const lockTTL = 5;
-//     const acquired = await redis.set(lockKey, lockValue, 'NX', 'EX', lockTTL);
-//     if (!acquired) {
-//         return reply.status(429).send({ error: "Seat is currently being booked by someone else. Please try again." });
-//     }
-//     try {
-//         const seat = await prisma.seat.findFirst({ where: { number: seatNumber } });
-//         if (!seat) return reply.status(404).send({ error: "Seat not found" });
-//         if (seat.status !== "AVAILABLE") return reply.status(409).send({ error: "Seat already taken" });
-//         const seatId = seat.id;
-//         await new Promise(r => setTimeout(r, 50));
-//         await prisma.user.upsert({
-//             where: { email: userId },
-//             update: {},
-//             create: { id: userId, email: userId, name: "Test User" }
-//         });
-//         await prisma.seat.update({ where: { id: seatId }, data: { status: "BOOKED" } });
-//         const booking = await prisma.booking.create({
-//             data: { userId, seatId }
-//         });
-//         return { success: true, bookingId: booking.id };
-//     } catch (error) {
-//         app.log.error(error);
-//         return reply.status(500).send({ error: "Booking Failed" });
-//     } finally {
-//         const unlockScript = `
-//             if redis.call("get", KEYS[1]) == ARGV[1] then
-//                 return redis.call("del", KEYS[1])
-//             else
-//                 return 0
-//             end
-//         `;
-//         await redis.eval(unlockScript, 1, lockKey, lockValue);
-//     }
-// });
-
-// -- QUICK DEMO MODE STARTUP (No External Dependencies) --
-// import { runWorker } from './worker'; // Disabled for quick demo mode
+// Declare the decoration
+declare module 'fastify' {
+    interface FastifyInstance {
+        io: Server;
+    }
+}
 
 const start = async () => {
     try {
         const port = Number(process.env.PORT) || 3000;
 
-        // Start the HTTP server FIRST (critical for health checks)
+        // Initialize Socket.io (Must be attached to the server instance)
+        // We defer listening until after logic setup, but Fastify needs the instance for the hook.
+        // Actually, easiest way in this single file is to create io after app.listen or attach to node server.
+
+        await app.ready();
+    } catch (err) {
+        app.log.error(err);
+        process.exit(1);
+    }
+};
+
+// We need to restructure slightly to allow `io` usage in routes.
+// A common pattern:
+// 1. Create server.
+// 2. Create IO.
+// 3. Register routes that use IO.
+
+// Let's modify the file structure via the replace tool to:
+// 1. Create `io` globally or decorate app.
+// 2. Add GET /api/seats
+// 3. Update POST /api/book-async
+
+// Re-writing the bottom half:
+
+// -- HELPER: Get all seats --
+app.get('/api/seats', async (request, reply) => {
+    try {
+        const seats = await prisma.seat.findMany({
+            orderBy: { id: 'asc' }
+        });
+        return seats;
+    } catch (error) {
+        app.log.error(error);
+        return reply.status(500).send({ error: "Failed to fetch seats" });
+    }
+});
+
+// -- SIMPLIFIED ASYNC IMPLEMENTATION (Direct DB Write + Socket Emitting) --
+app.post<{ Body: BookingBody }>('/api/book-async', async (request, reply) => {
+    const { userId, seatNumber } = request.body;
+    try {
+        const seat = await prisma.seat.findFirst({ where: { number: seatNumber } });
+        if (!seat) return reply.status(404).send({ error: "Seat not found" });
+        if (seat.status !== "AVAILABLE") return reply.status(409).send({ error: "Seat already taken" });
+
+        const seatId = seat.id;
+        await prisma.user.upsert({
+            where: { email: userId },
+            update: {},
+            create: { id: userId, email: userId, name: "Test User" }
+        });
+
+        const updatedSeat = await prisma.seat.update({
+            where: { id: seatId },
+            data: { status: "BOOKED" }
+        });
+
+        await prisma.booking.create({
+            data: { userId: userId, seatId: seatId }
+        });
+
+        // Emit update to all clients
+        if (app.io) {
+            app.io.emit('seat-update', { seatNumber: seatNumber, status: 'BOOKED' });
+        }
+
+        return reply.status(200).send({ success: true, status: "Booked" });
+    } catch (error) {
+        app.log.error(error);
+        return reply.status(500).send({ error: "Failed to process booking" });
+    }
+});
+
+// ... (keep Naive implementation if needed, or remove) ...
+
+const main = async () => {
+    try {
+        const port = Number(process.env.PORT) || 3000;
         const serverAddress = await app.listen({ port, host: '0.0.0.0' });
         console.log(`✅ Server running on ${serverAddress}`);
-        console.log(`🎯 Quick Demo Mode: Kafka and Redis disabled`);
 
-        // Initialize Socket.io for real-time updates
         const io = new Server(app.server, {
-            cors: { origin: "*" } // Allow all for demo
+            cors: { origin: "*" }
         });
+
+        // Attach io to app for routes to use
+        app.decorate('io', io);
+        app.io = io;
 
         io.on('connection', (socket) => {
             console.log('Client connected', socket.id);
         });
-
-        // No Kafka or Redis connections needed in quick demo mode
 
     } catch (err) {
         app.log.error(err);
@@ -240,5 +280,4 @@ const start = async () => {
     }
 };
 
-
-start();
+main();
